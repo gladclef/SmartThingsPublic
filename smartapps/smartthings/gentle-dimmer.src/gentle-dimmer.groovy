@@ -295,16 +295,20 @@ def schedulingPage() {
 
 		section("Allow Automatic Dimming") {
 			input(name: "days", type: "enum", title: "On These Days", description: "Every day", required: false, multiple: true, options: weekdays() + weekends())
+			input(name: "requiredModes", type: "mode", title: "In These Modes", multiple: true, required: false, submitOnChange: true)
 		}
 
 		section("Start Dimming...") {
 			input(name: "startTime", type: "time", title: "At This Time", description: null, required: false)
-			input(name: "modeStart", title: "When Entering This Mode", type: "mode", required: false, mutliple: false, submitOnChange: true, description: null)
+			if (requiredModes) {
+				input(name: "modeStart", title: "When Entering This Mode", type: "enum", required: false, options: requiredModes, mutliple: false, submitOnChange: true, description: null)
+			} else {
+				input(name: "modeStart", title: "When Entering This Mode", type: "mode", required: false, mutliple: false, submitOnChange: true, description: null)
+			}
 			if (modeStart) {
 				input(name: "modeStop", title: "Stop when leaving '${modeStart}' mode", type: "bool", required: false)
 			}
 		}
-
 	}
 }
 
@@ -599,17 +603,20 @@ private increment() {
 
 	def percentComplete = completionPercentage()
 
-	if (percentComplete > 99) {
-		percentComplete = 99
-	}
-
 	updateDimmers(percentComplete)
 
 	if (percentComplete < 99) {
 
+		// if we need to take microsteps so things are smooth, then set up this app to do so
 		def runAgain = stepDuration()
-		log.trace "Rescheduling to run again in ${runAgain} seconds"
-		runIn(runAgain, 'increment', [overwrite: true])
+		def cronTime = 60.0 // at 60 second intervals the cron job will take care of this for us
+		def accuracy = 0.25 // one quarter accuracy should still give a nice dimming effect
+		def smallestAllowableCronStepDuration = cronTime / accuracy
+		if (stepDuration < smallestAllowableCronStepDuration)
+		{
+			log.trace "Rescheduling to run again in ${runAgain} seconds"
+			runIn(runAgain, 'increment', [overwrite: true])
+		}
 
 	} else {
 
@@ -806,16 +813,26 @@ def setLevelsInState() {
 def canStartAutomatically() {
 
 	def today = new Date().format("EEEE")
-	log.debug "today: ${today}, days: ${days}"
+	def mode = location.mode;
+	log.trace "today: ${today}, days: ${days}"
 
-	if (!days || days.contains(today)) {// if no days, assume every day
-		return true
+	if (days && !days.contains(today)) {// if no days, assume every day
+		log.trace "should not run, wrong day"
+		return false
 	}
 
-	log.trace "should not run"
-	return false
+	if (requiredModes && !requiredModes.contains(mode))
+	{
+		log.trace "should not run, wrong mode"
+		return false
+	}
+
+	return true
 }
 
+/**
+ * @return The percent of dimmer completion. Should be between 0 and 100.
+ */
 def completionPercentage() {
 	log.trace "checkingTime"
 
@@ -826,7 +843,7 @@ def completionPercentage() {
 	def now = new Date().getTime()
 	def timeElapsed = now - atomicState.start
 	def totalRunTime = totalRunTimeMillis() ?: 1
-	def percentComplete = timeElapsed / totalRunTime * 100
+	def percentComplete = Math.min(timeElapsed / totalRunTime * 100 as double, 100 as double)
 	log.trace "percentComplete: ${percentComplete}"
 
 	return percentComplete
@@ -1092,6 +1109,9 @@ private completionDelaySeconds() {
 	return completionDelaySeconds ?: 0
 }
 
+/**
+ * @return The ideal amount of time, in seconds, between each percentage of completion.
+ */
 private stepDuration() {
 	int minutes = sanitizeInt(duration, 30)
 	int stepDuration = (minutes * 60) / 100
@@ -1141,6 +1161,19 @@ def schedulingHrefDescription() {
 			descriptionParts << "On weekends,"
 		} else {
 			descriptionParts << "On ${fancyString(days)},"
+		}
+	}
+
+	if (requiredModes) {
+		if (!days) {
+			descriptionParts << "In"
+		} else {
+			descriptionParts << "in"
+		}
+		if (requiredModes.size() == 1) {
+			descriptionParts << "mode ${requiredModes[0]},"
+		} else {
+			descriptionParts << "modes " + requiredModes.join(" or ") + ","
 		}
 	}
 
@@ -1353,8 +1386,6 @@ def rgbToHsl(r, g, b){
 	h *= 100
 	s *= 100
 	l *= 100
-
-	log.warn("rgbToHsl: h ${h} s ${s} l ${l}")
 
 	return [
 		h: h,
