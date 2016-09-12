@@ -651,10 +651,10 @@ def updateDimmers(percentComplete) {
 
 			if (shouldChangeColors && hasSetColorCommand(dimmer)) {
 				def colorMap = getColorMap(dimmer, percentComplete)
-				colorMap["l"] = colorMap["lum"] = colorMap["luminance"] = colorMap["level"] = nextLevel
-				log.trace "Setting ${deviceLabel(dimmer)} level to ${nextLevel} and color to ${colorMap}"
+				log.trace "Setting ${deviceLabel(dimmer)} color to ${colorMap}"
 				dimmer.setColor(colorMap)
-			} else if (hasSetLevelCommand(dimmer)) {
+			}
+			if (hasSetLevelCommand(dimmer)) {
 				def temperatureStr = ""
 				if (shouldChangeColorTemperatures && hasSetColorTemperatureCommand(dimmer) && !hasSetColorCommand(dimmer)) {
 					def temperature = getColorTemperature(dimmer, percentComplete)
@@ -994,49 +994,45 @@ private getColorTemperature(dimmer, percentComplete) {
 }
 
 def getColorMap(dimmer, percentComplete) {
-	def startColorMap, startColor, endColor
+	def startColor, endColor
 
 	if (individualColors) {
 		if (settings.get("deviceColorUseCurrent" + dimmer.id)) {
-			startColorMap = atomicState.startOtherProps[dimmer.id]["startColor"]
+			startColor = anyToHsl( atomicState.startOtherProps[dimmer.id]["startColor"] )
 		} else {
 			startColor = hexToHsl( settings.get("deviceColorStart" + dimmer.id) )
 		}
 		endColor = hexToHsl( settings.get("deviceColorEnd" + dimmer.id) )
 	} else {
 		if (settings.get("deviceColorUseCurrent")) {
-			startColorMap = atomicState.startOtherProps[dimmer.id]["startColor"]
+			startColor = anyToHsl( atomicState.startOtherProps[dimmer.id]["startColor"] )
 		} else {
 			startColor = hexToHsl( settings.get("deviceColorStart") )
 		}
 		endColor = hexToHsl( settings.get("deviceColorEnd") )
 	}
 
-	if (startColorMap) {
-		if (startColorMap.hue || startColorMap.h) {
-			def h = startColorMap.h ?: ( startColorMap.hue ?: 0 )
-			def s = startColorMap.h ?: ( startColorMap.sat ?: (startColorMap.saturation ?: 100) )
-			def l = startColorMap.l ?: ( startColorMap.lum ?: (startColorMap.luminance ?: 60) )
-			startColor = [
-				h: h,
-				s: s,
-				l: l
-			]
-		} else if (startColorMap.hex) {
-			startColor = hexToHsl( startColorMap.hex )
+	// deals with the edge case of transitioning from purple-ish red to yellow-ish red
+	if (Math.abs(endColor.h - startColor.h) > 50) {
+		if (endColor.h > startColor.h) {
+			endColor.h -= 100
 		} else {
-			def red = startColorMap.red ?: (startColorMap.r ?: 255)
-			def green = startColorMap.green ?: (startColorMap.g ?: 255)
-			def blue = startColorMap.blue ?: (startColorMap.b ?: 255)
-			startColor = rgbToHsl(red, green, blue)
+			endColor.h += 100
 		}
 	}
+
+	startColor.s = getAdjustedSaturationForLightbulbUse(startColor)
+	endColor.s = getAdjustedSaturationForLightbulbUse(endColor)
 
 	def currentColor = [
 		h: startColor.h + ((endColor.h - startColor.h) * percentComplete / 100.0),
 		s: startColor.s + ((endColor.s - startColor.s) * percentComplete / 100.0),
-		l: startColor.l + ((endColor.l - startColor.l) * percentComplete / 100.0),
+		l: startColor.l + ((endColor.l - startColor.l) * percentComplete / 100.0)
 	]
+
+	// more code to hangle edge case of transitioning from purple-ish red to yellow-ish red
+	currentColor.h %= 100
+
 	currentColor["hue"] = currentColor["h"]
 	currentColor["sat"] = currentColor["s"]
 	currentColor["saturation"] = currentColor["s"]
@@ -1046,6 +1042,17 @@ def getColorMap(dimmer, percentComplete) {
 	currentColor += hslToRgb( currentColor.h, currentColor.s, currentColor.l )
 
 	return currentColor
+}
+
+/**
+ * Returns a modified saturation value for the given color to deal with the fact that we are
+ * dealing with light bulbs that don't respect luminance impacts on saturation levels.
+ */
+def getAdjustedSaturationForLightbulbUse(hslColorMap) {
+	def l = hslColorMap.l
+	def s = hslColorMap.s
+
+	return s - Math.abs(50 - l)
 }
 
 private dimmersContainUnsupportedDevices() {
@@ -1170,10 +1177,14 @@ def schedulingHrefDescription() {
 		} else {
 			descriptionParts << "in"
 		}
-		if (requiredModes.size() == 1) {
-			descriptionParts << "mode ${requiredModes[0]},"
+		if (requiredModes == location.modes) {
+			descriptionParts << "any mode"
 		} else {
-			descriptionParts << "modes " + requiredModes.join(" or ") + ","
+			if (requiredModes.size() == 1) {
+				descriptionParts << "mode ${requiredModes[0]},"
+			} else {
+				descriptionParts << "modes " + requiredModes.join(" or ") + ","
+			}
 		}
 	}
 
@@ -1362,13 +1373,14 @@ def rgbToHsl(r, g, b){
 	b /= 255.0
 	def max = Math.max(r, Math.max(g, b))
 	def min = Math.min(r, Math.min(g, b))
-	def h, s, l = (max + min) / 2
+	def h, s, l = (max + min) / 2.0
 
 	if(max == min){
 		h = s = 0 // achromatic
 	}else{
 		def d = max - min
-		s = l > 0.5 ? d / (2 - max - min) : d / (max + min)
+		s = d
+		s /= l > 0.5 ? (2.0 - max - min) : (max + min)
 		switch(max) {
 		case r:
 			h = (g - b) / d + (g < b ? 6 : 0)
@@ -1383,9 +1395,9 @@ def rgbToHsl(r, g, b){
 		h /= 6
 	}
 
-	h *= 100
-	s *= 100
-	l *= 100
+	h *= 100.0
+	s *= 100.0
+	l *= 100.0
 
 	return [
 		h: h,
@@ -1443,6 +1455,35 @@ def hexToRgb(hex) {
 def hexToHsl(hex) {
 	def rgb = hexToRgb(hex)
 	return rgbToHsl(rgb.r, rgb.g, rgb.b)
+}
+
+def anyToHsl(colorMap) {
+	def retval = []
+
+	if (startColorMap.hue || startColorMap.h) {
+		def h = startColorMap.h ?: ( startColorMap.hue ?: 0 )
+		def s = startColorMap.h ?: ( startColorMap.sat ?: (startColorMap.saturation ?: 100) )
+		def l = startColorMap.l ?: ( startColorMap.lum ?: (startColorMap.luminance ?: 60) )
+		retval = [
+			h: h,
+			hue: h,
+			s: s,
+			sat: s,
+			l: l,
+			lum: l,
+			luminance: l,
+			level: l
+		]
+	} else if (startColorMap.hex) {
+		retval = hexToHsl( startColorMap.hex )
+	} else {
+		def red = startColorMap.red ?: (startColorMap.r ?: 255)
+		def green = startColorMap.green ?: (startColorMap.g ?: 255)
+		def blue = startColorMap.blue ?: (startColorMap.b ?: 255)
+		retval = rgbToHsl(red, green, blue)
+	}
+
+	return retval
 }
 
 def usesOldSettings() {
