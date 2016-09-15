@@ -222,8 +222,9 @@ def addDeviceColorInput(id = null) {
 	]
 	def idStr = id ?: "";
 	input(name: "deviceColorUseCurrent" + idStr, type: "bool", title: "Start From Current Color", description: null, required: true, defaultValue: false, submitOnChange: true)
-	def useCurrentTempToStart = settings.get("deviceColorUseCurrent" + idStr)
-	if (!useCurrentTempToStart) {
+	def useCurrentColorToStart = settings.get("deviceColorUseCurrent" + idStr)
+	log.warn("deviceColorUseCurrent" + idStr + ": " + useCurrentColorToStart)
+	if (!useCurrentColorToStart) {
 		input(name: "deviceColorStart" + idStr, type: "enum", options: options, title: "Starting Color", description: null, required: true, defaultValue: "#FFA757")
 	}
 	input(name: "deviceColorEnd" + idStr, type: "enum", options: options, title: "Ending Color", description: null, required: true, defaultValue: "#FFA757")
@@ -649,15 +650,19 @@ def updateDimmers(percentComplete) {
 			def shouldChangeColors = (colorize && colorize != "false")
 			def shouldChangeColorTemperatures = (colorTemperatureize && colorTemperatureize != "false")
 
+			def colorDimmers = dimmersWithSetColorCommand()
+			def colorTemperatureDimmers = dimmersWithSetColorTemperatureCommand()
+			colorTemperatureDimmers.removeAll(colorDimmers)
+
 			if (shouldChangeColors && hasSetColorCommand(dimmer)) {
-				def colorMap = getColorMap(dimmer, percentComplete)
+				def colorMap = getColorMap(dimmer, colorDimmers.size(), percentComplete)
 				log.trace "Setting ${deviceLabel(dimmer)} color to ${colorMap}"
 				dimmer.setColor(colorMap)
 			}
 			if (hasSetLevelCommand(dimmer)) {
 				def temperatureStr = ""
 				if (shouldChangeColorTemperatures && hasSetColorTemperatureCommand(dimmer) && !hasSetColorCommand(dimmer)) {
-					def temperature = getColorTemperature(dimmer, percentComplete)
+					def temperature = getColorTemperature(dimmer, colorTemperatureDimmers.size(), percentComplete)
 					temperatureStr = " temperature to ${temperature}"
 					dimmer.setColorTemperature(temperature)
 				}
@@ -909,71 +914,10 @@ int dynamicEndLevel() {
 	return endLevel as int
 }
 
-def getHue(dimmer, level) {
-	def start = atomicState.startLevels[dimmer.id] as int
-	def end = dynamicEndLevel()
-	if (start > end) {
-		return getDownHue(level)
-	} else {
-		return getUpHue(level)
-	}
-}
-
-def getUpHue(level) {
-	getBlueHue(level)
-}
-
-def getDownHue(level) {
-	getRedHue(level)
-}
-
-private getBlueHue(level) {
-	if (level < 5) return 72
-	if (level < 10) return 71
-	if (level < 15) return 70
-	if (level < 20) return 69
-	if (level < 25) return 68
-	if (level < 30) return 67
-	if (level < 35) return 66
-	if (level < 40) return 65
-	if (level < 45) return 64
-	if (level < 50) return 63
-	if (level < 55) return 62
-	if (level < 60) return 61
-	if (level < 65) return 60
-	if (level < 70) return 59
-	if (level < 75) return 58
-	if (level < 80) return 57
-	if (level < 85) return 56
-	if (level < 90) return 55
-	if (level < 95) return 54
-	if (level >= 95) return 53
-}
-
-private getRedHue(level) {
-	if (level < 6) return 1
-	if (level < 12) return 2
-	if (level < 18) return 3
-	if (level < 24) return 4
-	if (level < 30) return 5
-	if (level < 36) return 6
-	if (level < 42) return 7
-	if (level < 48) return 8
-	if (level < 54) return 9
-	if (level < 60) return 10
-	if (level < 66) return 11
-	if (level < 72) return 12
-	if (level < 78) return 13
-	if (level < 84) return 14
-	if (level < 90) return 15
-	if (level < 96) return 16
-	if (level >= 96) return 17
-}
-
-private getColorTemperature(dimmer, percentComplete) {
+private getColorTemperature(dimmer, colorTemperatureDimmerCount, percentComplete) {
 	def startTemp, endTemp
 
-	if (individualColorTemperatures) {
+	if (individualColorTemperatures > colorTemperatureDimmerCount) {
 		if (settings.get("deviceColorTemperatureUseCurrent" + dimmer.id)) {
 			startTemp = atomicState.startOtherProps[dimmer.id]["startColorTemperature"]
 		} else {
@@ -993,12 +937,17 @@ private getColorTemperature(dimmer, percentComplete) {
 	return currentTemp as int
 }
 
-def getColorMap(dimmer, percentComplete) {
-	def startColor, endColor
+def getColorMap(dimmer, colorDimmerCount, percentComplete) {
+	def startColor, endColor, doAdjustStartColor
 
-	if (individualColors) {
+	// The fact that we are working with physical lightbulbs means we need a special handling of saturation
+	doAdjustStartColor = true;
+
+	if (individualColors && colorDimmerCount > 1) {
 		if (settings.get("deviceColorUseCurrent" + dimmer.id)) {
 			startColor = anyToHsl( atomicState.startOtherProps[dimmer.id]["startColor"] )
+			log.warn("current color: " + startColor)
+			doAdjustStartColor = false
 		} else {
 			startColor = hexToHsl( settings.get("deviceColorStart" + dimmer.id) )
 		}
@@ -1006,6 +955,8 @@ def getColorMap(dimmer, percentComplete) {
 	} else {
 		if (settings.get("deviceColorUseCurrent")) {
 			startColor = anyToHsl( atomicState.startOtherProps[dimmer.id]["startColor"] )
+			log.warn("current color: " + startColor)
+			doAdjustStartColor = false
 		} else {
 			startColor = hexToHsl( settings.get("deviceColorStart") )
 		}
@@ -1021,7 +972,10 @@ def getColorMap(dimmer, percentComplete) {
 		}
 	}
 
-	startColor.s = getAdjustedSaturationForLightbulbUse(startColor)
+	// Here is where we actually adjust the saturation levels of our colors.
+	if (doAdjustStartColor) {
+		startColor.s = getAdjustedSaturationForLightbulbUse(startColor)
+	}
 	endColor.s = getAdjustedSaturationForLightbulbUse(endColor)
 
 	def currentColor = [
@@ -1047,12 +1001,16 @@ def getColorMap(dimmer, percentComplete) {
 /**
  * Returns a modified saturation value for the given color to deal with the fact that we are
  * dealing with light bulbs that don't respect luminance impacts on saturation levels.
+ * <p>
+ * This effectively reduces the saturation levels for higher and lower luminance levels.
  */
 def getAdjustedSaturationForLightbulbUse(hslColorMap) {
 	def l = hslColorMap.l
 	def s = hslColorMap.s
 
-	return s - Math.abs(50 - l)
+	s = s - Math.abs(50 - l)
+
+	return Math.max(0, Math.min(100, s))
 }
 
 private dimmersContainUnsupportedDevices() {
@@ -1460,10 +1418,10 @@ def hexToHsl(hex) {
 def anyToHsl(colorMap) {
 	def retval = []
 
-	if (startColorMap.hue || startColorMap.h) {
-		def h = startColorMap.h ?: ( startColorMap.hue ?: 0 )
-		def s = startColorMap.h ?: ( startColorMap.sat ?: (startColorMap.saturation ?: 100) )
-		def l = startColorMap.l ?: ( startColorMap.lum ?: (startColorMap.luminance ?: 60) )
+	if (colorMap.hue || colorMap.h) {
+		def h = colorMap.h ?: ( colorMap.hue ?: 0 )
+		def s = colorMap.h ?: ( colorMap.sat ?: (colorMap.saturation ?: 100) )
+		def l = colorMap.l ?: ( colorMap.lum ?: (colorMap.luminance ?: 60) )
 		retval = [
 			h: h,
 			hue: h,
@@ -1474,12 +1432,12 @@ def anyToHsl(colorMap) {
 			luminance: l,
 			level: l
 		]
-	} else if (startColorMap.hex) {
-		retval = hexToHsl( startColorMap.hex )
+	} else if (colorMap.hex) {
+		retval = hexToHsl( colorMap.hex )
 	} else {
-		def red = startColorMap.red ?: (startColorMap.r ?: 255)
-		def green = startColorMap.green ?: (startColorMap.g ?: 255)
-		def blue = startColorMap.blue ?: (startColorMap.b ?: 255)
+		def red = colorMap.red ?: (colorMap.r ?: 255)
+		def green = colorMap.green ?: (colorMap.g ?: 255)
+		def blue = colorMap.blue ?: (colorMap.b ?: 255)
 		retval = rgbToHsl(red, green, blue)
 	}
 
