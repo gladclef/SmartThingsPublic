@@ -157,7 +157,7 @@ def numbersPage() {
 			if (useCurrentLevel) {
 				paragraph("If the light is off, then start from this level instead:")
 			}
-			input(name: "startLevel", type: "number", range: "0..99", title: "From this level", defaultValue: defaultStart(), description: "Current Level", required: false, multiple: false)
+			input(name: "startLevel", type: "number", range: "0..99", title: "From this level", defaultValue: defaultStart(), description: "Between 0 and 99", required: true, multiple: false)
 			input(name: "endLevel", type: "number", range: "0..99", title: "To this level", defaultValue: defaultEnd(), description: "Between 0 and 99", required: true, multiple: false)
 		}
 
@@ -241,41 +241,23 @@ def addDeviceColorTemperatureInput(id = null) {
 }
 
 def defaultStart() {
-	if (usesOldSettings() && direction && direction == "Down") {
-		return 99
-	}
-	return 0
+	return 0;
 }
 
 def defaultEnd() {
-	if (usesOldSettings() && direction && direction == "Down") {
-		return 0
-	}
-	return 99
+	return 99;
 }
 
 def startLevelLabel() {
-	if (usesOldSettings()) { // using old settings
-		if (direction && direction == "Down") { // 99 -> 1
-			return "99%"
-		}
-		return "0%"
-	}
-	def startLevelStr = (startLevel ?: 0) + "%"
+	def startLevelStr = "${startLevel}%"
 	return isUseCurrentLevel() ? "Current Level or ${startLevelStr}" : startLevelStr
 }
 
 def isUseCurrentLevel() {
-	return (useCurrentLevel != null && useCurrentLevel) || !hasStartLevel()
+	return (useCurrentLevel != null && useCurrentLevel)
 }
 
 def endLevelLabel() {
-	if (usesOldSettings()) {
-		if (direction && direction == "Down") { // 99 -> 1
-			return "0%"
-		}
-		return "99%"
-	}
 	return "${endLevel}%"
 }
 
@@ -793,10 +775,10 @@ def setLevelsInState() {
 		if (usesOldSettings()) {
 			startLevels[dimmer.id] = defaultStart()
 		} else if (!isUseCurrentLevel()) {
-			startLevels[dimmer.id] = (startLevel ?: 0)
+			startLevels[dimmer.id] = startLevel
 		} else {
 			def dimmerIsOff = dimmer.currentValue("switch") == "off"
-			startLevels[dimmer.id] = dimmerIsOff ? (startLevel ?: 0) : dimmer.currentValue("level")
+			startLevels[dimmer.id] = dimmerIsOff ? startLevel : dimmer.currentValue("level")
 		}
 
 		startOtherProps[dimmer.id] = [:]
@@ -905,12 +887,6 @@ def jumpTo(percentComplete) {
 
 
 int dynamicEndLevel() {
-	if (usesOldSettings()) {
-		if (direction && direction == "Down") {
-			return 0
-		}
-		return 99
-	}
 	return endLevel as int
 }
 
@@ -1435,23 +1411,84 @@ def anyToHsl(colorMap) {
 	} else if (colorMap.hex) {
 		retval = hexToHsl( colorMap.hex )
 	} else {
-		def red = colorMap.red ?: (colorMap.r ?: 255)
-		def green = colorMap.green ?: (colorMap.g ?: 255)
-		def blue = colorMap.blue ?: (colorMap.b ?: 255)
+		def red =   colorMap.red ?:   ( colorMap.r ?: ( colorMap[0] ?: 255 ) )
+		def green = colorMap.green ?: ( colorMap.g ?: ( colorMap[1] ?: 255 ) )
+		def blue =  colorMap.blue ?:  ( colorMap.b ?: ( colorMap[2] ?: 255 ) )
 		retval = rgbToHsl(red, green, blue)
 	}
 
 	return retval
 }
 
-def usesOldSettings() {
-	!hasEndLevel()
+/**
+ * Given a temperature (in Kelvin), estimate an RGB equivalent.
+ * <p>
+ * From http://www.tannerhelland.com/4435/convert-temperature-rgb-algorithm-code/
+ */
+def tempToRGB(tmpKelvin) {
+
+    def r, g, b
+
+    // Temperature must fall between 1000 and 40000 degrees
+    tmpKelvin = Math.min(40000, Math.max(1000, tmpKelvin))
+    
+    // All calculations require tmpKelvin / 100, so only do the conversion once
+    tmpKelvin /= 100
+    
+    //Calculate each color in turn
+    
+    //First: red
+    if (tmpKelvin <= 66) {
+        r = 255
+    } else {
+        //Note: the R-squared value for this approximation is .988
+        r = tmpKelvin - 60
+        r = 329.698727446 * Math.pow(r, -0.1332047592)
+    }
+    
+    // Second: green
+    if (tmpKelvin <= 66) {
+        // Note: the R-squared value for this approximation is .996
+        g = tmpKelvin
+        g = 99.4708025861 * Math.log(g) - 161.1195681661
+    } else {
+        // Note: the R-squared value for this approximation is .987
+        g = tmpKelvin - 60
+        g = 288.1221695283 * (g ^ -0.0755148492)
+    }
+    
+    // Third: blue
+    if (tmpKelvin >= 66) {
+        b = 255
+    } else if (tmpKelvin <= 19) {
+        b = 0
+    } else {
+        // Note: the R-squared value for this approximation is .998
+        b = tmpKelvin - 10
+        b = 138.5177312231 * Math.log(b) - 305.0447927307
+    }
+
+    r = Math.max(0, Math.min(255, r))
+    g = Math.max(0, Math.min(255, g))
+    b = Math.max(0, Math.min(255, b))
+
+	return [
+		0: r,
+		r: r,
+		red: r,
+		1: g,
+		g: g,
+		green: g,
+		2: b,
+		b: b,
+		blue: b
+	]
 }
 
-def hasStartLevel() {
-	return (startLevel != null && startLevel != "")
+def tempToHsl(tmpKelvin) {
+	return rgbToHsl(tmpKelvin)
 }
 
-def hasEndLevel() {
-	return (endLevel != null && endLevel != "")
+def tempToHex(tmpKelvin) {
+	return rgbToHex(tmpKelvin)
 }
