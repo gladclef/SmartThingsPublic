@@ -81,7 +81,6 @@ def rootPage() {
 }
 
 def unsupportedDevicesPage() {
-
 	def unsupportedDimmers = dimmers.findAll { !hasSetLevelCommand(it) }
 
 	dynamicPage(name: "unsupportedDevicesPage") {
@@ -157,11 +156,14 @@ def numbersPage() {
 			if (useCurrentLevel) {
 				paragraph("If the light is off, then start from this level instead:")
 			}
-			input(name: "startLevel", type: "number", range: "0..99", title: "From this level", defaultValue: defaultStart(), description: "Between 0 and 99", required: true, multiple: false)
-			input(name: "endLevel", type: "number", range: "0..99", title: "To this level", defaultValue: defaultEnd(), description: "Between 0 and 99", required: true, multiple: false)
+			input(name: "startLevel", type: "number", range: "0..99", title: "From this level", defaultValue: getStartLevelOrDefault(), description: "Between 0 and 99", required: true, multiple: false)
+			input(name: "endLevel", type: "number", range: "0..99", title: "To this level", defaultValue: getEndLevelOrDefault(), description: "Between 0 and 99", required: true, multiple: false)
 		}
 
-		def colorDimmers = dimmersWithSetColorCommand()
+		def dimmersArray = getDimmersArray()
+		def colorDimmers = dimmersArray.colorDimmers
+		def colorTemperatureDimmers = dimmersArray.colorTemperatureDimmersMinusColor
+
 		if (colorDimmers) {
 			section {
 				input(name: "colorize", type: "bool", title: "Gradually change the color of ${fancyDeviceString(colorDimmers)}", description: null, required: false, defaultValue: "false", submitOnChange: true)
@@ -182,8 +184,6 @@ def numbersPage() {
 			}
 		}
 
-		def colorTemperatureDimmers = dimmersWithSetColorTemperatureCommand()
-		colorTemperatureDimmers.removeAll(colorDimmers)
 		if (colorTemperatureDimmers) {
 			section {
 				input(name: "colorTemperatureize", type: "bool", title: "Gradually change the temperature of ${fancyDeviceString(colorTemperatureDimmers)}", description: null, required: false, defaultValue: "false", submitOnChange: true)
@@ -208,10 +208,10 @@ def numbersPage() {
 
 def addDeviceColorInput(id = null) {
 	def options = [
-		["#FFA757": "Soft White - Default"],
-		["#FFBB81": "White - Concentrate"],
-		["#FFFEFA": "Daylight - Energize"],
-		["#FFB16E": "Warm White - Relax"],
+		[("#" + tempToHex(2700)): "Soft White - Default"],
+		[("#" + tempToHex(5000)): "White - Concentrate"],
+		[("#" + tempToHex(6500)): "Daylight - Energize"],
+		[("#" + tempToHex(3200)): "Warm White - Relax"],
 		["#FF0000": "Red"],
 		["#00FF00": "Green"],
 		["#0000FF": "Blue"],
@@ -223,7 +223,6 @@ def addDeviceColorInput(id = null) {
 	def idStr = id ?: "";
 	input(name: "deviceColorUseCurrent" + idStr, type: "bool", title: "Start From Current Color", description: null, required: true, defaultValue: false, submitOnChange: true)
 	def useCurrentColorToStart = settings.get("deviceColorUseCurrent" + idStr)
-	log.warn("deviceColorUseCurrent" + idStr + ": " + useCurrentColorToStart)
 	if (!useCurrentColorToStart) {
 		input(name: "deviceColorStart" + idStr, type: "enum", options: options, title: "Starting Color", description: null, required: true, defaultValue: "#FFA757")
 	}
@@ -248,8 +247,18 @@ def defaultEnd() {
 	return 99;
 }
 
+def getStartLevelOrDefault(deviceId = null, isIndividualLevelSettings = null) {
+	// TODO make use of deviceId and isIndividualLevelSettings
+	return startLevel ?: defaultStart()
+}
+
+def getEndLevelOrDefault(deviceId = null, isIndividualLevelSettings = null) {
+	// TODO make use of deviceId and isIndividualLevelSettings
+	return endLevel ?: defaultEnd()
+}
+
 def startLevelLabel() {
-	def startLevelStr = "${startLevel}%"
+	def startLevelStr = "${getStartLevelOrDefault()}%"
 	return isUseCurrentLevel() ? "Current Level or ${startLevelStr}" : startLevelStr
 }
 
@@ -258,7 +267,7 @@ def isUseCurrentLevel() {
 }
 
 def endLevelLabel() {
-	return "${endLevel}%"
+	return "${getEndLevelOrDefault()}%"
 }
 
 def weekdays() {
@@ -366,6 +375,10 @@ private initialize() {
 		subscribe(dimmers, "switch.off", stopDimmersHandler)
 	}
 
+	removeDimmerSpecificSettings()
+
+	initDimmerSpecificSettings()
+
 	if (!getAllChildDevices()) {
 		// create controller device and set name to the label used here
 		def dni = "${new Date().getTime()}"
@@ -433,7 +446,7 @@ def scheduledStart() {
 	}
 }
 
-public def start(source) {
+def start(source) {
 	log.trace "START"
 
 	sendStartEvent(source)
@@ -448,7 +461,7 @@ public def start(source) {
 	increment()
 }
 
-public def stop(source) {
+def stop(source) {
 	log.trace "STOP"
 
 	sendStopEvent(source)
@@ -459,7 +472,7 @@ public def stop(source) {
 	unschedule("healthCheck")
 }
 
-private healthCheck() {
+def healthCheck() {
 	log.trace "'Gentle Dimmer' healthCheck"
 
 	if (!atomicState.running) {
@@ -619,6 +632,10 @@ private increment() {
 
 
 def updateDimmers(percentComplete) {
+	def dimmersArray = getDimmersArray()
+	def colorDimmers = dimmersArray.colorDimmers
+	def colorTemperatureDimmers = dimmersArray.colorTemperatureDimmersMinusColor
+
 	dimmers.each { dimmer ->
 
 		def nextLevel = dynamicLevel(dimmer, percentComplete)
@@ -632,10 +649,6 @@ def updateDimmers(percentComplete) {
 			def shouldChangeColors = (colorize && colorize != "false")
 			def shouldChangeColorTemperatures = (colorTemperatureize && colorTemperatureize != "false")
 
-			def colorDimmers = dimmersWithSetColorCommand()
-			def colorTemperatureDimmers = dimmersWithSetColorTemperatureCommand()
-			colorTemperatureDimmers.removeAll(colorDimmers)
-
 			if (shouldChangeColors && hasSetColorCommand(dimmer)) {
 				def colorMap = getColorMap(dimmer, colorDimmers.size(), percentComplete)
 				log.trace "Setting ${deviceLabel(dimmer)} color to ${colorMap}"
@@ -645,7 +658,7 @@ def updateDimmers(percentComplete) {
 				def temperatureStr = ""
 				if (shouldChangeColorTemperatures && hasSetColorTemperatureCommand(dimmer) && !hasSetColorCommand(dimmer)) {
 					def temperature = getColorTemperature(dimmer, colorTemperatureDimmers.size(), percentComplete)
-					temperatureStr = " temperature to ${temperature}"
+					temperatureStr = " and temperature to ${temperature}"
 					dimmer.setColorTemperature(temperature)
 				}
 				log.trace "Setting ${deviceLabel(dimmer)} level to ${nextLevel}" + temperatureStr
@@ -661,7 +674,7 @@ def updateDimmers(percentComplete) {
 }
 
 int dynamicLevel(dimmer, percentComplete) {
-	def start = atomicState.startLevels[dimmer.id]
+	def start = atomicState.dimmerProps[dimmer.id]["startLevel"]
 	def end = dynamicEndLevel()
 
 	if (!percentComplete) {
@@ -767,34 +780,78 @@ def resumePlaying() {
 // Helpers
 // ========================================================
 
+/**
+ * Removes from the atomic state dimmer settings for dimmers that are no longer selected.
+ * <p>
+ * Removes both the dimmerProps (which can only be set during initialization()) and
+ * deviceIdStrings (which are hackish but must be used during the preferences page set up).
+ */
+def removeDimmerSpecificSettings() {
+	def oldIds = atomicState.dimmerIds ?: []
+	def dimmerProps = atomicState.dimmerProps ?: [:]
+	def newIds = []
+	def deviceIdStrings = [
+		"deviceColorUseCurrent",
+		"deviceColorStart",
+		"deviceColorEnd",
+		"deviceColorTemperatureUseCurrent",
+		"deviceColorTemperatureStart",
+		"deviceColorTemperatureEnd",
+	]
+	
+	dimmers.each { dimmer ->
+		newIds << dimmer.id
+	}
+	oldIds.removeAll(newIds)
+
+	oldIds.each { id ->
+		deviceIdStrings.each { prefix ->
+			if (atomicState[prefix + id]) {
+				atomicState.remove(prefix + id)
+			}
+		}
+		dimmerProps.remove(id)
+	}
+
+	atomicState.dimmerIds = newIds
+	atomicState.dimmerProps = dimmerProps
+}
+
+def initDimmerSpecificSettings() {
+	def dimmerProps = atomicState.dimmerProps ?: [:]
+
+	atomicState.dimmerIds.each { id ->
+		if (!dimmerProps[id]) {
+			dimmerProps[id] = [:]
+		}
+	}
+
+	atomicState.dimmerProps = dimmerProps
+}
+
 def setLevelsInState() {
-	def startLevels = [:]
-	def startOtherProps = [:]
+	def dimmerProps = atomicState.dimmerProps
 
 	dimmers.each { dimmer ->
-		if (usesOldSettings()) {
-			startLevels[dimmer.id] = defaultStart()
-		} else if (!isUseCurrentLevel()) {
-			startLevels[dimmer.id] = startLevel
+		if (!isUseCurrentLevel()) {
+			dimmerProps[dimmer.id]["startLevel"] = getStartLevelOrDefault()
 		} else {
 			def dimmerIsOff = dimmer.currentValue("switch") == "off"
-			startLevels[dimmer.id] = dimmerIsOff ? startLevel : dimmer.currentValue("level")
+			dimmerProps[dimmer.id]["startLevel"] = dimmerIsOff ? getStartLevelOrDefault() : dimmer.currentValue("level")
 		}
 
-		startOtherProps[dimmer.id] = [:]
 		if (hasSetColorCommand(dimmer)) {
 			def hue = dimmer.currentValue("hue")
 			def sat = dimmer.currentValue("saturation") ?: dimmer.currentValue("sat")
 			def level = dimmer.currentValue("level")
-			startOtherProps[dimmer.id]["startColor"] = [hue: hue, sat: sat, level: level]
+			dimmerProps[dimmer.id]["startColor"] = [hue: hue, sat: sat, level: level]
 		}
 		if (hasSetColorTemperatureCommand(dimmer)) {
-			startOtherProps[dimmer.id]["startColorTemperature"] = dimmer.currentValue("colorTemperature")
+			dimmerProps[dimmer.id]["startColorTemperature"] = [temperature: dimmer.currentValue("colorTemperature")]
 		}
 	}
 
-	atomicState.startLevels = startLevels
-	atomicState.startOtherProps = startOtherProps
+	atomicState.dimmerProps = dimmerProps
 }
 
 def canStartAutomatically() {
@@ -895,14 +952,14 @@ private getColorTemperature(dimmer, colorTemperatureDimmerCount, percentComplete
 
 	if (individualColorTemperatures > colorTemperatureDimmerCount) {
 		if (settings.get("deviceColorTemperatureUseCurrent" + dimmer.id)) {
-			startTemp = atomicState.startOtherProps[dimmer.id]["startColorTemperature"]
+			startTemp = atomicState.dimmerProps[dimmer.id]["startColorTemperature"]["temperature"]
 		} else {
 			startTemp = settings.get("deviceColorTemperatureStart" + dimmer.id)
 		}
 		endTemp = settings.get("deviceColorTemperatureEnd" + dimmer.id)
 	} else {
 		if (settings.get("deviceColorTemperatureUseCurrent")) {
-			startTemp = atomicState.startOtherProps[dimmer.id]["startColorTemperature"]
+			startTemp = atomicState.dimmerProps[dimmer.id]["startColorTemperature"]["temperature"]
 		} else {
 			startTemp = settings.get("deviceColorTemperatureStart")
 		}
@@ -913,29 +970,46 @@ private getColorTemperature(dimmer, colorTemperatureDimmerCount, percentComplete
 	return currentTemp as int
 }
 
+def getCurrentColorPerAll(deviceId) {
+	return getCurrentColorPer(deviceId, false)
+}
+
+def getCurrentColorPerDevice(deviceId) {
+	return getCurrentColorPer(deviceId, true)
+}
+
+def getCurrentColorPer(deviceId, isUseDeviceSpecific) {
+	def retval = [ startColor: "", doAdjustStartColor: true ]
+	def dimmerProps = atomicState.dimmerProps[deviceId]
+	def useCurrentStr = (isUseDeviceSpecific) ? "deviceColorUseCurrent" + deviceId : "deviceColorUseCurrent";
+	def deviceColorStartStr = (isUseDeviceSpecific) ? "deviceColorStart" + deviceId : "deviceColorStart";
+
+	if (settings.get(useCurrentStr)) {
+		retval.startColor = anyToHsl( dimmerProps["startColor"] )
+		retval.doAdjustStartColor = false
+	} else {
+		retval.startColor = hexToHsl( settings.get(deviceColorStartStr) )
+	}
+
+	return retval
+}
+
 def getColorMap(dimmer, colorDimmerCount, percentComplete) {
-	def startColor, endColor, doAdjustStartColor
+	def startColor, endColor, doAdjustStartColor, currentColorStats
+	def doUseIndividualColors = individualColors && colorDimmerCount > 1
 
 	// The fact that we are working with physical lightbulbs means we need a special handling of saturation
 	doAdjustStartColor = true;
 
-	if (individualColors && colorDimmerCount > 1) {
-		if (settings.get("deviceColorUseCurrent" + dimmer.id)) {
-			startColor = anyToHsl( atomicState.startOtherProps[dimmer.id]["startColor"] )
-			log.warn("current color: " + startColor)
-			doAdjustStartColor = false
-		} else {
-			startColor = hexToHsl( settings.get("deviceColorStart" + dimmer.id) )
-		}
+	if (doUseIndividualColors) {
+		currentColorStats = getCurrentColorPerDevice(dimmer.id)
+		startColor = currentColorStats.startColor
+		doAdjustStartColor = currentColorStats.doAdjustStartColor
 		endColor = hexToHsl( settings.get("deviceColorEnd" + dimmer.id) )
 	} else {
-		if (settings.get("deviceColorUseCurrent")) {
-			startColor = anyToHsl( atomicState.startOtherProps[dimmer.id]["startColor"] )
-			log.warn("current color: " + startColor)
-			doAdjustStartColor = false
-		} else {
-			startColor = hexToHsl( settings.get("deviceColorStart") )
-		}
+		currentColorStats = getCurrentColorPerAll(dimmer.id)
+		startColor = currentColorStats.startColor
+		doAdjustStartColor = currentColorStats.doAdjustStartColor
 		endColor = hexToHsl( settings.get("deviceColorEnd") )
 	}
 
@@ -1028,6 +1102,18 @@ private dimmersWithSetColorTemperatureCommand() {
 		}
 	}
 	return colorTemperatureDimmers
+}
+
+private getDimmersArray() {
+	def colorDimmers = dimmersWithSetColorCommand()
+	def colorTemperatureDimmers = dimmersWithSetColorTemperatureCommand()
+	def colorTemperatureDimmersMinusColor = dimmersWithSetColorTemperatureCommand()
+	colorTemperatureDimmersMinusColor.removeAll(colorDimmers)
+	return [
+		colorDimmers: colorDimmers,
+		colorTemperatureDimmers: colorTemperatureDimmers,
+		colorTemperatureDimmersMinusColor: colorTemperatureDimmersMinusColor
+	]
 }
 
 private int sanitizeInt(i, int defaultValue = 0) {
@@ -1216,22 +1302,24 @@ def numbersPageHrefDescription() {
 			}
 		}
 		if (combinedDimmers == dimmers) {
-			title += " and will gradually change color and temperature."
+			title += " and will gradually change color and color temperature."
 		} else {
-			title += ".\n${fancyDeviceString(combinedDimmers)} will gradually change color and temperature."
+			title += ".\n${fancyDeviceString(combinedDimmers)} will gradually change color and color temperature."
 		}
-	} else if (colorize) {
+	} else if (colorize && colorDimmers) {
 		if (colorDimmers == dimmers) {
 			title += " and will gradually change color."
 		} else {
 			title += ".\n${fancyDeviceString(colorDimmers)} will gradually change color."
 		}
-	} else if (colorTemperatureDimmers) {
+	} else if (colorTemperatureize && colorTemperatureDimmers) {
 		if (colorTemperatureDimmers == dimmers) {
-			title += " and will gradually change temperature."
+			title += " and will gradually change color temperature."
 		} else {
-			title += ".\n${fancyDeviceString(colorTemperatureDimmers)} will gradually change temperature."
+			title += ".\n${fancyDeviceString(colorTemperatureDimmers)} will gradually change color temperature."
 		}
+	} else {
+		title += "."
 	}
 	return title
 }
@@ -1410,6 +1498,9 @@ def anyToHsl(colorMap) {
 		]
 	} else if (colorMap.hex) {
 		retval = hexToHsl( colorMap.hex )
+	} else if (colorMap.temp || colorMap.temperature) {
+		def temperature = colorMap.temp ?: colorMap.temperature
+		retval = tempToHsl( temperature )
 	} else {
 		def red =   colorMap.red ?:   ( colorMap.r ?: ( colorMap[0] ?: 255 ) )
 		def green = colorMap.green ?: ( colorMap.g ?: ( colorMap[1] ?: 255 ) )
@@ -1427,50 +1518,50 @@ def anyToHsl(colorMap) {
  */
 def tempToRGB(tmpKelvin) {
 
-    def r, g, b
+	def r, g, b
 
-    // Temperature must fall between 1000 and 40000 degrees
-    tmpKelvin = Math.min(40000, Math.max(1000, tmpKelvin))
-    
-    // All calculations require tmpKelvin / 100, so only do the conversion once
-    tmpKelvin /= 100
-    
-    //Calculate each color in turn
-    
-    //First: red
-    if (tmpKelvin <= 66) {
-        r = 255
-    } else {
-        //Note: the R-squared value for this approximation is .988
-        r = tmpKelvin - 60
-        r = 329.698727446 * Math.pow(r, -0.1332047592)
-    }
-    
-    // Second: green
-    if (tmpKelvin <= 66) {
-        // Note: the R-squared value for this approximation is .996
-        g = tmpKelvin
-        g = 99.4708025861 * Math.log(g) - 161.1195681661
-    } else {
-        // Note: the R-squared value for this approximation is .987
-        g = tmpKelvin - 60
-        g = 288.1221695283 * (g ^ -0.0755148492)
-    }
-    
-    // Third: blue
-    if (tmpKelvin >= 66) {
-        b = 255
-    } else if (tmpKelvin <= 19) {
-        b = 0
-    } else {
-        // Note: the R-squared value for this approximation is .998
-        b = tmpKelvin - 10
-        b = 138.5177312231 * Math.log(b) - 305.0447927307
-    }
+	// Temperature must fall between 1000 and 40000 degrees
+	tmpKelvin = Math.min(40000, Math.max(1000, tmpKelvin))
+	
+	// All calculations require tmpKelvin / 100, so only do the conversion once
+	tmpKelvin /= 100
+	
+	//Calculate each color in turn
+	
+	//First: red
+	if (tmpKelvin <= 66) {
+		r = 255
+	} else {
+		//Note: the R-squared value for this approximation is .988
+		r = tmpKelvin - 60
+		r = 329.698727446 * Math.pow(r, -0.1332047592)
+	}
+	
+	// Second: green
+	if (tmpKelvin <= 66) {
+		// Note: the R-squared value for this approximation is .996
+		g = tmpKelvin
+		g = 99.4708025861 * Math.log(g) - 161.1195681661
+	} else {
+		// Note: the R-squared value for this approximation is .987
+		g = tmpKelvin - 60
+		g = 288.1221695283 * (g ^ -0.0755148492)
+	}
+	
+	// Third: blue
+	if (tmpKelvin >= 66) {
+		b = 255
+	} else if (tmpKelvin <= 19) {
+		b = 0
+	} else {
+		// Note: the R-squared value for this approximation is .998
+		b = tmpKelvin - 10
+		b = 138.5177312231 * Math.log(b) - 305.0447927307
+	}
 
-    r = Math.max(0, Math.min(255, r))
-    g = Math.max(0, Math.min(255, g))
-    b = Math.max(0, Math.min(255, b))
+	r = Math.max(0, Math.min(255, r))
+	g = Math.max(0, Math.min(255, g))
+	b = Math.max(0, Math.min(255, b))
 
 	return [
 		0: r,
@@ -1486,9 +1577,11 @@ def tempToRGB(tmpKelvin) {
 }
 
 def tempToHsl(tmpKelvin) {
-	return rgbToHsl(tmpKelvin)
+	def rgb = tempToRGB(tmpKelvin)
+	return rgbToHsl(rgb.r, rgb.g, rgb.b)
 }
 
 def tempToHex(tmpKelvin) {
-	return rgbToHex(tmpKelvin)
+	def rgb = tempToRGB(tmpKelvin)
+	return rgbToHex(rgb.r, rgb.g, rgb.b)
 }
