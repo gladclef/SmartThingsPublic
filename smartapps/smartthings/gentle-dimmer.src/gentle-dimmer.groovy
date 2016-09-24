@@ -23,7 +23,7 @@
  * 	world (you may want to set your normal alarm as a backup plan).
  *
  *  Author: Benjamin Bean
- *  Date: 2016-09-09
+ *  Date: 2016-09-24
  *  
  *  Changes to this code to make it colored light and temperature light capable, meaning
  *  you can select the color and temperature per light, specifically.
@@ -383,7 +383,7 @@ private initialize() {
 		// create controller device and set name to the label used here
 		def dni = "${new Date().getTime()}"
 		log.debug "app.label: ${app.label}"
-		addChildDevice("smartthings", "Gentle Dimmer Controller", dni, null, ["label": app.label])
+		addChildDevice("smartthings", "Gentle Wake Up Controller", dni, null, ["label": app.label])
 		atomicState.controllerDni = dni
 	}
 }
