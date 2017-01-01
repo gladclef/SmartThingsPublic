@@ -19,7 +19,6 @@ metadata {
 
         capability "Actuator"
         capability "Configuration"
-        capability "Polling"
         capability "Refresh"
         capability "Switch"
         capability "Switch Level"
@@ -67,12 +66,6 @@ def parse(String description) {
     def resultMap = zigbee.getEvent(description)
     if (resultMap) {
         sendEvent(resultMap)
-        // Temporary fix for the case when Device is OFFLINE and is connected again
-        if (state.lastActivity == null){
-            state.lastActivity = now()
-            sendEvent(name: "deviceWatch-lastActivity", value: state.lastActivity, description: "Last Activity is on ${new Date((long)state.lastActivity)}", displayed: false, isStateChange: true)
-        }
-        state.lastActivity = now()
     }
     else {
         log.debug "DID NOT PARSE MESSAGE for description : $description"
@@ -96,27 +89,23 @@ def setLevel(value) {
  * PING is used by Device-Watch in attempt to reach the Device
  * */
 def ping() {
-
-    if (state.lastActivity < (now() - (1000 * device.currentValue("checkInterval"))) ){
-        log.info "ping, alive=no, lastActivity=${state.lastActivity}"
-        state.lastActivity = null
-        return zigbee.levelRefresh()
-    } else {
-        log.info "ping, alive=yes, lastActivity=${state.lastActivity}"
-        sendEvent(name: "deviceWatch-lastActivity", value: state.lastActivity, description: "Last Activity is on ${new Date((long)state.lastActivity)}", displayed: false, isStateChange: true)
-    }
+    return zigbee.levelRefresh()
 }
 
 def refresh() {
-    zigbee.onOffRefresh() + zigbee.levelRefresh() + zigbee.onOffConfig() + zigbee.levelConfig()
-}
-
-def poll() {
     zigbee.onOffRefresh() + zigbee.levelRefresh()
 }
 
+def healthPoll() {
+    log.debug "healthPoll()"
+    def cmds = zigbee.onOffRefresh() + zigbee.levelRefresh()
+    cmds.each{ sendHubCommand(new physicalgraph.device.HubAction(it))}
+}
+
 def configure() {
-    log.debug "Configuring Reporting and Bindings."
-    sendEvent(name: "checkInterval", value: 1200, displayed: false, data: [protocol: "zigbee"])
-    zigbee.onOffConfig() + zigbee.levelConfig() + zigbee.onOffRefresh() + zigbee.levelRefresh()
+    unschedule()
+    runEvery5Minutes("healthPoll")
+    // Device-Watch allows 2 check-in misses from device + ping
+    sendEvent(name: "checkInterval", value: 60 * 12, displayed: false, data: [protocol: "zigbee", hubHardwareId: device.hub.hardwareID])
+    zigbee.onOffRefresh() + zigbee.levelRefresh()
 }

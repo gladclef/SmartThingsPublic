@@ -16,7 +16,7 @@
 import physicalgraph.zigbee.clusters.iaszone.ZoneStatus
 
 metadata {
-	definition (name: "SmartSense Open/Closed Sensor", namespace: "smartthings", author: "SmartThings", category: "C2") {
+	definition (name: "SmartSense Open/Closed Sensor", namespace: "smartthings", author: "SmartThings") {
 		capability "Battery"
 		capability "Configuration"
 		capability "Contact Sensor"
@@ -92,15 +92,8 @@ def parse(String description) {
     	map = parseIasMessage(description)
     }
 
-	// Temporary fix for the case when Device is OFFLINE and is connected again
-	if (state.lastActivity == null){
-		state.lastActivity = now()
-		sendEvent(name: "deviceWatch-lastActivity", value: state.lastActivity, description: "Last Activity is on ${new Date((long)state.lastActivity)}", displayed: false, isStateChange: true)
-	}
-	state.lastActivity = now()
-
 	log.debug "Parse returned $map"
-	def result = map ? createEvent(map) : null
+	def result = map ? createEvent(map) : [:]
 
     if (description?.startsWith('enroll request')) {
     	List cmds = enrollResponse()
@@ -116,15 +109,28 @@ private Map parseCatchAllMessage(String description) {
     if (shouldProcessMessage(cluster)) {
         switch(cluster.clusterId) {
             case 0x0001:
-            	resultMap = getBatteryResult(cluster.data.last())
+				// 0x07 - configure reporting
+				if (cluster.command != 0x07) {
+					resultMap = getBatteryResult(cluster.data.last())
+				}
                 break
 
             case 0x0402:
-                log.debug 'TEMP'
-                // temp is last 2 data values. reverse to swap endian
-                String temp = cluster.data[-2..-1].reverse().collect { cluster.hex1(it) }.join()
-                def value = getTemperature(temp)
-                resultMap = getTemperatureResult(value)
+				if (cluster.command == 0x07){
+					if (cluster.data[0] == 0x00) {
+						log.debug "TEMP REPORTING CONFIG RESPONSE" + cluster
+						resultMap = [name: "checkInterval", value: 60 * 12, displayed: false, data: [protocol: "zigbee", hubHardwareId: device.hub.hardwareID]]
+					}
+					else {
+						log.warn "TEMP REPORTING CONFIG FAILED- error code:${cluster.data[0]}"
+					}
+				}
+				else {
+					// temp is last 2 data values. reverse to swap endian
+					String temp = cluster.data[-2..-1].reverse().collect { cluster.hex1(it) }.join()
+					def value = getTemperature(temp)
+					resultMap = getTemperatureResult(value)
+				}
                 break
         }
     }
@@ -134,10 +140,8 @@ private Map parseCatchAllMessage(String description) {
 
 private boolean shouldProcessMessage(cluster) {
     // 0x0B is default response indicating message got through
-    // 0x07 is bind message
     boolean ignoredMessage = cluster.profileId != 0x0104 ||
         cluster.command == 0x0B ||
-        cluster.command == 0x07 ||
         (cluster.data.size() > 0 && cluster.data.first() == 0x3e)
     return !ignoredMessage
 }
@@ -192,23 +196,19 @@ private Map getBatteryResult(rawValue) {
 	log.debug 'Battery'
 	def linkText = getLinkText(device)
 
-    def result = [
-    	name: 'battery'
-    ]
+    def result = [:]
 
 	def volts = rawValue / 10
-	def descriptionText
-    if (rawValue == 0 || rawValue == 255) {}
-    else if (volts > 3.5) {
-		result.descriptionText = "${linkText} battery has too much power (${volts} volts)."
-	}
-	else {
+	if (!(rawValue == 0 || rawValue == 255)) {
 		def minVolts = 2.1
-    	def maxVolts = 3.0
+		def maxVolts = 3.0
 		def pct = (volts - minVolts) / (maxVolts - minVolts)
 		def roundedPct = Math.round(pct * 100)
+	    if (roundedPct <= 0)
+		    roundedPct = 1
 		result.value = Math.min(100, roundedPct)
 		result.descriptionText = "${linkText} battery was ${result.value}%"
+		result.name = 'battery'
 	}
 
 	return result
@@ -246,15 +246,7 @@ private Map getContactResult(value) {
  * PING is used by Device-Watch in attempt to reach the Device
  * */
 def ping() {
-
-	if (state.lastActivity < (now() - (1000 * device.currentValue("checkInterval"))) ){
-		log.info "ping, alive=no, lastActivity=${state.lastActivity}"
-		state.lastActivity = null
-		return zigbee.readAttribute(0x001, 0x0020) // Read the Battery Level
-	} else {
-		log.info "ping, alive=yes, lastActivity=${state.lastActivity}"
-		sendEvent(name: "deviceWatch-lastActivity", value: state.lastActivity, description: "Last Activity is on ${new Date((long)state.lastActivity)}", displayed: false, isStateChange: true)
-	}
+	return zigbee.readAttribute(0x001, 0x0020) // Read the Battery Level
 }
 
 def refresh() {
@@ -268,23 +260,15 @@ def refresh() {
 }
 
 def configure() {
-	sendEvent(name: "checkInterval", value: 14400, displayed: false, data: [protocol: "zigbee"])
+	// Device-Watch allows 2 check-in misses from device + ping (plus 1 min lag time)
+	// enrolls with default periodic reporting until newer 5 min interval is confirmed
+	sendEvent(name: "checkInterval", value: 2 * 60 * 60 + 1 * 60, displayed: false, data: [protocol: "zigbee", hubHardwareId: device.hub.hardwareID])
 
-	String zigbeeEui = swapEndianHex(device.hub.zigbeeEui)
 	log.debug "Configuring Reporting, IAS CIE, and Bindings."
-	def configCmds = [
-		"zcl global write 0x500 0x10 0xf0 {${zigbeeEui}}", "delay 200",
-		"send 0x${device.deviceNetworkId} 1 1", "delay 500",
 
-		"zdo bind 0x${device.deviceNetworkId} ${endpointId} 1 1 {${device.zigbeeId}} {}", "delay 500",
-		"zcl global send-me-a-report 1 0x20 0x20 30 21600 {01}",		//checkin time 6 hrs
-		"send 0x${device.deviceNetworkId} 1 1", "delay 500",
-
-		"zdo bind 0x${device.deviceNetworkId} ${endpointId} 1 0x402 {${device.zigbeeId}} {}", "delay 500",
-		"zcl global send-me-a-report 0x402 0 0x29 30 3600 {6400}",
-		"send 0x${device.deviceNetworkId} 1 1", "delay 500"
-	]
-    return configCmds + refresh() // send refresh cmds as part of config
+	// temperature minReportTime 30 seconds, maxReportTime 5 min. Reporting interval if no activity
+	// battery minReport 30 seconds, maxReportTime 6 hrs by default
+    return refresh() + zigbee.batteryConfig() + zigbee.temperatureConfig(30, 300) // send refresh cmds as part of config
 }
 
 def enrollResponse() {

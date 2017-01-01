@@ -1,6 +1,6 @@
 # Connected Cree LED Bulb
 
-
+Cloud Execution
 
 Works with: 
 
@@ -23,10 +23,10 @@ Works with:
 
 ## Device Health
 
-A Category C6 Connected Cree LED Bulb with maxReportTime of 10 min.
-Check-in interval is double the value of maxReportTime for Zigbee device. 
-This gives the device twice the amount of time to respond before it is marked as offline.
-Check-in interval = 2*10 = 20 min
+Connected Cree LED Bulb with cloud polling it every __5min__
+SmartThings platform will ping the device after `checkInterval` seconds of inactivity in last attempt to reach the device before marking it `OFFLINE` 
+
+* __12min__ checkInterval
 
 ## Troubleshooting
 
